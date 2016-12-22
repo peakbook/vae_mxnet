@@ -56,7 +56,7 @@ function vae_sampler(mu::mx.SymbolicNode, s::mx.SymbolicNode, epsilon::mx.Symbol
 end
 
 # decoder network
-function vae_decoder(z::mx.SymbolicNode, batch_size::Int)
+function vae_decoder(z::mx.SymbolicNode)
     return @mx.chain mx.FullyConnected(name=:decode1, data=z, num_hidden=250) =>
                      mx.Activation(act_type=:relu) =>
                      mx.FullyConnected(name=:decode2, num_hidden=500) =>
@@ -64,8 +64,7 @@ function vae_decoder(z::mx.SymbolicNode, batch_size::Int)
                      mx.FullyConnected(name=:decode3, num_hidden=1000) =>
                      mx.Activation(act_type=:relu) =>
                      mx.FullyConnected(name=:decode4, num_hidden=28*28) =>
-                     mx.Activation(act_type=:sigmoid) =>
-                     mx.Reshape(shape=(28, 28, batch_size))
+                     mx.Activation(act_type=:sigmoid)
 end
 
 function VAE(n_z::Int, batch_size::Int;
@@ -80,10 +79,10 @@ function VAE(n_z::Int, batch_size::Int;
     # define vae network
     mu, s = vae_encoder(data, n_z)
     z, kl = vae_sampler(mu, s, epsilon)
-    dec   = vae_decoder(z, batch_size)
+    dec   = vae_decoder(z)
 
     # define loss function
-    loss  = mx.sum_axis(mx.square(mx.Flatten(label-dec)), axis=1)
+    loss  = mx.sum_axis(mx.square(mx.Flatten(label)-dec), axis=1)
     D     = mx.sum_axis(kl, axis=1)
     net   = mx.MakeLoss(loss + D)
     d     = mx.BlockGrad(data=kl)

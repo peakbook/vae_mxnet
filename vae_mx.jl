@@ -79,7 +79,7 @@ function vae_train(N::Int; ctx=mx.cpu())
 
     # gen decoder
     input = mx.Variable(:z)
-    dec = vae_decoder(input, batch_size)
+    dec = vae_decoder(input)
 
     # save decoder params
     mx.save(SYM_NAME, dec)
