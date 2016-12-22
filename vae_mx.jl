@@ -12,7 +12,7 @@ Args:
     test           Test VAE
 
 Options:
-    --N=VALUE      # of Epoch for training [default: 1000]
+    --N=VALUE      # of Epoch for training [default: 100]
     --min=VALUE    minimum value of latent variable [default: -1.0]
     --max=VALUE    maximum value of latent variable [default: 1.0]
     --ctx=VALUE    Context (cpu/gpu) [default: cpu]
@@ -79,7 +79,7 @@ function vae_train(N::Int; ctx=mx.cpu())
 
     # gen decoder
     input = mx.Variable(:z)
-    dec = vae_decoder(input)
+    dec = vae_decoder(input, batch_size)
 
     # save decoder params
     mx.save(SYM_NAME, dec)
