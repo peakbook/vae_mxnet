@@ -3,19 +3,21 @@ progname=basename(@__FILE__)
 doc = """
 
 Usage:
-    $(progname) train [--N= --ctx=]
+    $(progname) train [--epoch= --batch= --ctx=]
     $(progname) eval [--min= --max= --ctx=]
     $(progname) view [--min= --max= --ctx=]
 
 Args:
-    train          Train VAE
-    test           Test VAE
+    train    train VAE
+    eval     generate image from trained VAE
+    view     run simple viewer 
 
 Options:
-    --N=VALUE      # of Epoch for training [default: 100]
-    --min=VALUE    minimum value of latent variable [default: -1.0]
-    --max=VALUE    maximum value of latent variable [default: 1.0]
-    --ctx=VALUE    Context (cpu/gpu) [default: cpu]
+    --epoch=VALUE   # of Epoch for training [default: 100]
+    --batch=VALUE   batch size  [default: 100]
+    --min=VALUE     minimum value of latent variable [default: -1.0]
+    --max=VALUE     maximum value of latent variable [default: 1.0]
+    --ctx=VALUE     context (cpu/gpu) [default: cpu]
 
 """
 
@@ -28,6 +30,8 @@ include("VAE.jl")
  
 const SYM_NAME = "vae.sym"
 const ARG_NAME = "vae.arg"
+const IMG_NAME = "vae.png"
+const IMG_DIR = "epoch/"
 
 function get_MNIST_rawdata()
     fnames = mx.get_mnist_ubyte()
@@ -53,8 +57,20 @@ function rescale(X::Array)
     return (X-vmin)/(vmax-vmin)
 end
 
-function vae_train(N::Int; ctx=mx.cpu())
-    batch_size = 100
+function save_image(decoder::mx.FeedForward, prefix::AbstractString; frequency::Int=1, ctx=mx.cpu())
+    mkpath(dirname(prefix))
+    mx.every_n_epoch(frequency) do model, state, metric
+        for i in keys(model.arg_params)
+            if ismatch(r"decode", string(i))
+                decoder.arg_params[i] = model.arg_params[i]
+            end
+        end
+        fname = joinpath(prefix, @sprintf("%05d.png", state.curr_epoch))
+        vae_eval(decoder, fname, -1.0, 1.0)
+    end
+end
+
+function vae_train(epoch::Int, batch_size::Int; ctx=mx.cpu())
     n_z = 2
 
     filenames = mx.get_mnist_ubyte()
@@ -66,8 +82,15 @@ function vae_train(N::Int; ctx=mx.cpu())
     model = mx.FeedForward(vae, context=ctx)
     optimizer = mx.ADAM()
 
+    # gen decoder
+    input = mx.Variable(:z)
+    dec = vae_decoder(input)
+    decoder = mx.FeedForward(dec, context=ctx)
+    decoder.aux_params = Dict{Symbol, mx.NDArray}()
+    decoder.arg_params = Dict{Symbol, mx.NDArray}()
+
     mx.fit(model, optimizer, train_provider,
-           n_epoch=N, callbacks=[mx.speedometer()],
+           n_epoch=epoch, callbacks=[save_image(decoder,IMG_DIR)],
            eval_metric=VAEMetric())
 
     # delete encoder params
@@ -76,10 +99,6 @@ function vae_train(N::Int; ctx=mx.cpu())
             delete!(model.arg_params, i)
         end
     end
-
-    # gen decoder
-    input = mx.Variable(:z)
-    dec = vae_decoder(input)
 
     # save decoder params
     mx.save(SYM_NAME, dec)
@@ -98,12 +117,11 @@ function load_model(fname_node::String, fname_arg::String;
     return model
 end
 
-function vae_eval(vmin::Float64, vmax::Float64; ctx=mx.cpu())
+function vae_eval(model::mx.FeedForward, fname::String, vmin::Float64, vmax::Float64; ctx=mx.cpu())
     w = 20
     batch_size = w*w
-    model = load_model(SYM_NAME, ARG_NAME)
 
-    l = linspace(-vmin,vmax,w)
+    l = linspace(vmin,vmax,w)
     dd = ndgrid(l,l)
     Xin = hcat(vec(dd[1]),vec(dd[2]))'
 
@@ -115,7 +133,7 @@ function vae_eval(vmin::Float64, vmax::Float64; ctx=mx.cpu())
     for j=1:w, i=1:w
         imgdata[(i-1)*28+1:i*28, (j-1)*28+1:j*28] = rescale(data[:,:,i,j])
     end
-    Images.save("vae.png", grayim(imgdata))
+    Images.save(fname, grayim(imgdata))
 end
 
 function val_changed(ptr, user_data)
@@ -137,8 +155,7 @@ function val_changed(ptr, user_data)
     return nothing
 end
 
-function vae_win(vmin::Float64, vmax::Float64; ctx=mx.cpu())
-    model = load_model(SYM_NAME, ARG_NAME, ctx=ctx)
+function vae_win(model, vmin::Float64, vmax::Float64; ctx=mx.cpu())
     # pre run
     dp    = mx.ArrayDataProvider(:z=>reshape([0,0], (2,1)))
     prob  = mx.predict(model, dp)
@@ -179,16 +196,19 @@ function main()
     args = docopt(doc)
     ctx = args["--ctx"] == "cpu" ? mx.cpu() : mx.gpu()
     if args["train"]
-        N = parse(Int, args["--N"])
-        vae_train(N, ctx=ctx)
+        epoch = parse(Int, args["--epoch"])
+        batch = parse(Int, args["--batch"])
+        vae_train(epoch, batch, ctx=ctx)
     elseif args["eval"]
         vmin = parse(Float64, args["--min"])
         vmax = parse(Float64, args["--max"])
-        vae_eval(vmin, vmax, ctx=ctx)
+        model = load_model(SYM_NAME, ARG_NAME)
+        vae_eval(model, IMG_NAME, vmin, vmax, ctx=ctx)
     elseif args["view"]
         vmin = parse(Float64, args["--min"])
         vmax = parse(Float64, args["--max"])
-        vae_win(vmin, vmax, ctx=ctx)
+        model = load_model(SYM_NAME, ARG_NAME)
+        vae_win(model, vmin, vmax, ctx=ctx)
     end
 end
 

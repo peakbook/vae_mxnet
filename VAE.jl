@@ -31,17 +31,15 @@ end
 
 # encoder network
 function vae_encoder(input::mx.SymbolicNode, n_z::Int)
-    enc = @mx.chain mx.FullyConnected(data=input, num_hidden=1000) =>
-                    mx.Activation(act_type=:relu) =>
-                    mx.FullyConnected(num_hidden=500) =>
+    enc = @mx.chain mx.FullyConnected(data=input, num_hidden=500) =>
                     mx.Activation(act_type=:relu) =>
                     mx.FullyConnected(num_hidden=250) =>
                     mx.Activation(act_type=:relu)
 
-    mu  = @mx.chain mx.FullyConnected(data=enc, num_hidden=n_z) =>
+    mu  = @mx.chain mx.FullyConnected(data=enc, num_hidden=n_z)# =>
                     mx.Activation(act_type=:tanh)
 
-    s   = @mx.chain mx.FullyConnected(data=enc, num_hidden=n_z) =>
+    s   = @mx.chain mx.FullyConnected(data=enc, num_hidden=n_z)# =>
                     mx.Activation(act_type=:tanh)
 
     return mu, s
@@ -61,9 +59,7 @@ function vae_decoder(z::mx.SymbolicNode)
                      mx.Activation(act_type=:relu) =>
                      mx.FullyConnected(name=:decode2, num_hidden=500) =>
                      mx.Activation(act_type=:relu) =>
-                     mx.FullyConnected(name=:decode3, num_hidden=1000) =>
-                     mx.Activation(act_type=:relu) =>
-                     mx.FullyConnected(name=:decode4, num_hidden=28*28) =>
+                     mx.FullyConnected(name=:decode3, num_hidden=28*28) =>
                      mx.Activation(act_type=:sigmoid)
 end
 
