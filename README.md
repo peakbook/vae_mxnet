@@ -10,3 +10,4 @@
 ## Usage
 see `./vae_mx.jl --help` .
 
+![VAE_example](http://peakbook.github.io/images/VAE_example.png)
