@@ -1,216 +1,179 @@
 #!/usr/bin/env julia
 progname=basename(@__FILE__)
-doc = """
+doc = """ Variational Auto-Encoder Test
 
 Usage:
-    $(progname) train [--epoch= --batch= --ctx=]
-    $(progname) eval [--min= --max= --ctx=]
-    $(progname) view [--min= --max= --ctx=]
+  $(progname) train <model> [--epoch= --batch= --ctx= --dir=]
+  $(progname) eval <model> <img> [--min= --max= --ctx=]
 
 Args:
-    train    train VAE
-    eval     generate image from trained VAE
-    view     run simple viewer 
+  train     train VAE
+  eval      generate image from trained VAE
+  <model>   name for exporting and importing model files
+  <img>     geberated image filename
 
 Options:
-    --epoch=VALUE   # of Epoch for training [default: 100]
-    --batch=VALUE   batch size  [default: 100]
-    --min=VALUE     minimum value of latent variable [default: -1.0]
-    --max=VALUE     maximum value of latent variable [default: 1.0]
-    --ctx=VALUE     context (cpu/gpu) [default: cpu]
+  --epoch=VALUE   # of epoch for training [default: 6000]
+  --batch=VALUE   batch size  [default: 100]
+  --min=VALUE     minimum value of latent variable [default: -1.0]
+  --max=VALUE     maximum value of latent variable [default: 1.0]
+  --ctx=VALUE     context (cpu/gpu) [default: cpu]
+  --dir=PATH      directory path for callback [default: epoch]
 
 """
 
 using DocOpt
+args = docopt(doc)
+
 using MXNet
-using Gtk, Gtk.ShortNames
 using Images
+using Printf
 
 include("VAE.jl")
- 
-const SYM_NAME = "vae.sym"
-const ARG_NAME = "vae.arg"
-const IMG_NAME = "vae.png"
-const IMG_DIR = "epoch/"
+
+const IMG_SHAPE = (28,28)
+const N_TRAIN = 60000
+const OFFSET_TRAIN = 16
+const OFFSET_LABEL = 8
 
 function get_MNIST_rawdata()
-    fnames = mx.get_mnist_ubyte()
-    X = open(fnames[:train_data], "r") do f
-        read(f)
-    end
-    Y = open(fnames[:train_label], "r") do f
-        read(f)
-    end
-    return reshape(X[17:end]/0xff, (28,28,60000)), reshape(Y[9:end], (60000,))
+  fnames = mx.get_mnist_ubyte()
+  X = open(fnames[:train_data], "r") do f
+    seek(f, OFFSET_TRAIN)
+    read(f)
+  end
+  Y = open(fnames[:train_label], "r") do f
+    seek(f, OFFSET_LABEL)
+    read(f)
+  end
+
+  return reshape(X/typemax(eltype(X)), (IMG_SHAPE...,N_TRAIN)),
+                 reshape(Y, (N_TRAIN,))
 end
 
-function ndgrid{T}(v1::AbstractVector{T}, v2::AbstractVector{T})
-    m, n = length(v1), length(v2)
-    v1 = reshape(v1, m, 1)
-    v2 = reshape(v2, 1, n)
-    (repmat(v1, 1, n), repmat(v2, m, 1))
+function ndgrid(v1::AbstractVector{T}, v2::AbstractVector{T}) where T
+  m, n = length(v1), length(v2)
+  v1 = reshape(v1, m, 1)
+  v2 = reshape(v2, 1, n)
+  (repeat(v1, 1, n), repeat(v2, m, 1))
 end
 
-function rescale(X::Array)
-    vmax = maximum(X)
-    vmin = minimum(X)
-    return (X-vmin)/(vmax-vmin)
-end
-
-function save_image(decoder::mx.FeedForward, prefix::AbstractString; frequency::Int=1, ctx=mx.cpu())
-    mkpath(dirname(prefix))
-    mx.every_n_epoch(frequency) do model, state, metric
-        for i in keys(model.arg_params)
-            if ismatch(r"decode", string(i))
-                decoder.arg_params[i] = model.arg_params[i]
-            end
-        end
-        fname = joinpath(prefix, @sprintf("%05d.png", state.curr_epoch))
-        vae_eval(decoder, fname, -1.0, 1.0)
-    end
-end
-
-function vae_train(epoch::Int, batch_size::Int; ctx=mx.cpu())
-    n_z = 2
-
-    filenames = mx.get_mnist_ubyte()
-    X,Y = get_MNIST_rawdata()
-    train_provider = mx.ArrayDataProvider(:data=>X, :data_label=>X,
-                                          batch_size=batch_size, shuffle=true)
-    
-    vae = VAE(n_z, batch_size)
-    model = mx.FeedForward(vae, context=ctx)
-    optimizer = mx.ADAM()
-
-    # gen decoder
-    input = mx.Variable(:z)
-    dec = vae_decoder(input)
-    decoder = mx.FeedForward(dec, context=ctx)
-    decoder.aux_params = Dict{Symbol, mx.NDArray}()
-    decoder.arg_params = Dict{Symbol, mx.NDArray}()
-
-    mx.fit(model, optimizer, train_provider,
-           n_epoch=epoch, callbacks=[save_image(decoder,IMG_DIR)],
-           eval_metric=VAEMetric())
-
-    # delete encoder params
+function save_image(decoder::mx.FeedForward, prefix::AbstractString; frequency::Int=10)
+  mkpath(prefix)
+  mx.every_n_epoch(frequency) do model, state, metric
     for i in keys(model.arg_params)
-        if !ismatch(r"decode", string(i))
-            delete!(model.arg_params, i)
-        end
+      if match(r"decode", string(i)) !== nothing
+        decoder.arg_params[i] = model.arg_params[i]
+      end
     end
-
-    # save decoder params
-    mx.save(SYM_NAME, dec)
-    mx.save(ARG_NAME, model.arg_params)
+    fname = joinpath(prefix, @sprintf("%06d.png", state.curr_epoch))
+    data = vae_eval(decoder, -1.0, 1.0)
+    save_as_tile_images(data, fname)
+  end
 end
 
-function load_model(fname_node::String, fname_arg::String;
-                    ctx=mx.cpu())
-    dec = mx.load(fname_node, mx.SymbolicNode)
-    arg = mx.load(fname_arg, mx.NDArray)
-
-    model = mx.FeedForward(dec, context=ctx)
-    model.aux_params = Dict{Symbol, mx.NDArray}()
-    model.arg_params = arg
-
-    return model
-end
-
-function vae_eval(model::mx.FeedForward, fname::String, vmin::Float64, vmax::Float64; ctx=mx.cpu())
-    w = 20
-    batch_size = w*w
-
-    l = linspace(vmin,vmax,w)
-    dd = ndgrid(l,l)
-    Xin = hcat(vec(dd[1]),vec(dd[2]))'
-
-    eval_provider = mx.ArrayDataProvider(:z=>Xin, batch_size=batch_size)
-    probs = mx.predict(model, eval_provider)
-
-    data = reshape(probs, (28,28,w,w))
-    imgdata = repmat(zeros(28,28), w, w)
-    for j=1:w, i=1:w
-        imgdata[(i-1)*28+1:i*28, (j-1)*28+1:j*28] = rescale(data[:,:,i,j])
+function save_params(model::mx.FeedForward, prefix::AbstractString; frequency::Int=10)
+  params = Dict{Symbol, mx.NDArray}()
+  mx.every_n_epoch(frequency) do model, state, metric
+    for i in keys(model.arg_params)
+      if match(r"decode", string(i)) !== nothing
+        params[i] = model.arg_params[i]
+      end
     end
-    Images.save(fname, grayim(imgdata))
+    mx.save(joinpath(prefix, @sprintf("%06d.params",state.curr_epoch)), params)
+  end
 end
 
-function val_changed(ptr, user_data)
-    sc1, sc2, data, img, pixbuf, model = user_data
+function save_model(name::AbstractString, net::mx.FeedForward)
+  mx.save(name*".json", net.arch)
+  mx.save(name*".params", net.arg_params)
+end
 
-    val1 = getproperty(@Adjustment(sc1), :value, Float64)
-    val2 = getproperty(@Adjustment(sc2), :value, Float64)
+function load_model(name::AbstractString; ctx=mx.cpu())
+  arch = mx.load(name*".json", mx.SymbolicNode)
+  arg = mx.load(name*".params", mx.NDArray)
 
-    dp   = mx.ArrayDataProvider(:z=>reshape([val1, val2], (2,1)))
-    prob = reshape(mx.predict(model, dp), (28,28))
+  model = mx.FeedForward(arch, context=ctx)
+  model.aux_params = Dict{Symbol, mx.NDArray}()
+  model.arg_params = arg
 
-    prob = rescale(prob)
-    for i = 1:28, j=1:28
-        pval = round(UInt8, prob[i,j]*255)
-        data[(i-1)*10+1:i*10,(j-1)*10+1:j*10] = Gtk.RGB(pval, pval, pval)
+  return model
+end
+
+function vae_train(epoch::Int, batch_size::Int, dir::AbstractString; ctx=mx.cpu())
+  n_z = 2
+
+  filenames = mx.get_mnist_ubyte()
+  X,Y = get_MNIST_rawdata()
+  train_provider = mx.ArrayDataProvider(:data_in=>X, :data_out=>X,
+                                        batch_size=batch_size, shuffle=true)
+
+  vae = VAE(n_z, :data_in, :data_out)
+  model = mx.FeedForward(vae, context=ctx)
+  optimizer = mx.ADAM()
+
+  input = mx.Variable(:z)
+  dec = vae_decoder(input)
+  decoder = mx.FeedForward(dec, context=ctx)
+  decoder.aux_params = Dict{Symbol, mx.NDArray}()
+  decoder.arg_params = Dict{Symbol, mx.NDArray}()
+
+  mx.fit(model, optimizer, train_provider,
+         n_epoch=epoch, 
+         callbacks=[save_image(decoder, dir, frequency=10),
+                    save_params(model, dir, frequency=100)],
+         eval_metric=VAEMetric())
+
+  # extract decoder params
+  for i in keys(model.arg_params)
+    if match(r"decode", string(i)) !== nothing
+      decoder.arg_params[i] = model.arg_params[i]
     end
-    G_.from_pixbuf(img, pixbuf)
+  end 
 
-    return nothing
+  return decoder
 end
 
-function vae_win(model, vmin::Float64, vmax::Float64; ctx=mx.cpu())
-    # pre run
-    dp    = mx.ArrayDataProvider(:z=>reshape([0,0], (2,1)))
-    prob  = mx.predict(model, dp)
+function vae_eval(model::mx.FeedForward, vmin::Float64, vmax::Float64; w::Integer=20, ctx=mx.cpu())
+  batch_size = w*w
 
-    # gen window
-    range  = vmin:(vmax-vmin)/100:vmax
-    sc1    = @Scale(false, range)
-    sc2    = @Scale(false, range)
-    vb     = @Box(:v)
-    win    = @Window(vb,"VAE Demo")
-    data   = Gtk.RGB[Gtk.RGB(0,0,0) for i=1:280, j=1:280]
-    pixbuf = @Pixbuf(data=data, has_alpha=false)
-    img    = @Image(pixbuf)
+  l = range(vmin,stop=vmax,length=w)
+  dd = ndgrid(l,l)
+  Xin = collect(hcat(vec(dd[1]),vec(dd[2]))')
 
-    setproperty!(@Adjustment(sc1), :value, 0.0)
-    setproperty!(@Adjustment(sc2), :value, 0.0)
-    setproperty!(img, :width_request, 280)
-    setproperty!(img, :height_request, 280)
+  eval_provider = mx.ArrayDataProvider(:z=>Xin, batch_size=batch_size)
+  probs = mx.predict(model, eval_provider)
 
-    push!(vb, sc1)
-    push!(vb, sc2)
-    push!(vb, img)
-
-    signal_connect(val_changed, sc1, :value_changed, Void,
-                   (), false, (sc1,sc2,data,img,pixbuf,model))
-    signal_connect(val_changed, sc2, :value_changed, Void,
-                   (), false, (sc1,sc2,data,img,pixbuf,model))
-
-    showall(win)
-    signal_connect(win, :destroy) do w
-        Gtk.gtk_quit()
-    end
-    Gtk.gtk_main()
+  return reshape(probs, (IMG_SHAPE..., w, w))
 end
 
-
-function main()
-    args = docopt(doc)
-    ctx = args["--ctx"] == "cpu" ? mx.cpu() : mx.gpu()
-    if args["train"]
-        epoch = parse(Int, args["--epoch"])
-        batch = parse(Int, args["--batch"])
-        vae_train(epoch, batch, ctx=ctx)
-    elseif args["eval"]
-        vmin = parse(Float64, args["--min"])
-        vmax = parse(Float64, args["--max"])
-        model = load_model(SYM_NAME, ARG_NAME)
-        vae_eval(model, IMG_NAME, vmin, vmax, ctx=ctx)
-    elseif args["view"]
-        vmin = parse(Float64, args["--min"])
-        vmax = parse(Float64, args["--max"])
-        model = load_model(SYM_NAME, ARG_NAME)
-        vae_win(model, vmin, vmax, ctx=ctx)
-    end
+function save_as_tile_images(data::Array, fname::AbstractString; w::Integer=20)
+  data = reshape(data, (IMG_SHAPE..., w, w))
+  imgdata = repeat(zeros(IMG_SHAPE...), w, w)
+  for j=1:w, i=1:w
+    f = scaleminmax(minimum(data[:,:,i,j]), maximum(data[:,:,i,j]))
+    data[:,:,i,j] = f.(data[:,:,i,j])
+    imgdata[(i-1)*IMG_SHAPE[1]+1:i*IMG_SHAPE[1],
+            (j-1)*IMG_SHAPE[2]+1:j*IMG_SHAPE[2]] = f.(data[:,:,i,j])
+  end
+  Images.save(fname, colorview(Gray, imgdata'))
 end
 
-main()
+function main(args)
+  ctx = args["--ctx"] == "cpu" ? mx.cpu() : mx.gpu()
+  if args["train"]
+    epoch = parse(Int, args["--epoch"])
+    batch = parse(Int, args["--batch"])
+    decoder = vae_train(epoch, batch, args["--dir"], ctx=ctx)
+    save_model(args["<model>"], decoder)
+  elseif args["eval"]
+    vmin = parse(Float64, args["--min"])
+    vmax = parse(Float64, args["--max"])
+    model = load_model(args["<model>"], ctx=ctx)
+    data = vae_eval(model, vmin, vmax, ctx=ctx)
+    save_as_tile_images(data, args["<img>"])
+  end
+end
+
+main(args)
 
