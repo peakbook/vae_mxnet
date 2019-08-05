@@ -1,0 +1,10 @@
+name = "vae_mxnet"
+uuid = "79822164-38c2-4a8c-958e-3a13d0bb3410"
+authors = ["peakbook <peakbook@users.noreply.github.com>"]
+version = "0.1.0"
+
+[deps]
+DocOpt = "968ba79b-81e4-546f-ab3a-2eecfa62a9db"
+Gtk = "4c0ca9eb-093a-5379-98c5-f87ac0bbbf44"
+Images = "916415d5-f1e6-5110-898d-aaa5f9f070e0"
+MXNet = "a7949054-b901-59c6-b8e3-7238c29bf7f0"
